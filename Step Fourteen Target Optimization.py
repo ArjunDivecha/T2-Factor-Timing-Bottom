@@ -196,31 +196,6 @@ def load_data():
     
     return target_weights_df, returns_df, alphas_df, exposure_df, tcosts_series
 
-def roll_forward_weights(prev_weights, returns):
-    """
-    Roll forward previous weights using monthly returns
-    
-    Args:
-        prev_weights: Previous month's weights (pandas Series)
-        returns: Monthly returns for current period (pandas Series)
-        
-    Returns:
-        pandas Series: Rolled forward weights (normalized to sum to 1)
-    """
-    # Apply returns to get new values, handle NaN returns
-    returns_clean = returns.fillna(0)  # Replace NaN returns with 0
-    new_values = prev_weights * (1 + returns_clean)
-    
-    # Handle case where all values become zero or negative
-    if new_values.sum() <= 0:
-        logging.warning("All portfolio values are zero or negative after applying returns. Using equal weights.")
-        rolled_weights = pd.Series(1.0 / len(prev_weights), index=prev_weights.index)
-    else:
-        # Normalize to sum to 1
-        rolled_weights = new_values / new_values.sum()
-    
-    return rolled_weights
-
 def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
     """
     Run the complete optimization process using CVXPY with asset-specific transaction costs
@@ -260,27 +235,29 @@ def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
     logging.info(f"Aligned data: {len(common_dates)} periods, {len(common_countries)} countries")
     logging.info(f"Asset-specific transaction costs range: {tcosts_aligned.min():.1%} to {tcosts_aligned.max():.1%}")
     
-    # Convert to numpy arrays for CVXPY
-    n_periods = len(common_dates)
-    n_countries = len(common_countries)
-    
     # Initialize tracking variables
     optimized_weights_list = []
     metrics_list = []
     previous_weights = target_weights_aligned.iloc[0]  # Use first month target weights as initial
     
     # Progress tracking
-    logging.info(f"Starting monthly optimization for {n_periods} periods...")
+    logging.info(f"Starting monthly optimization for {len(common_dates)} periods...")
     
     for t, date in enumerate(common_dates):
-        if t % 30 == 0 or t == n_periods - 1:
-            progress = (t + 1) / n_periods * 100
-            logging.info(f"... {t+1:3d}/{n_periods} months ({progress:5.1f}%)")
+        if t % 30 == 0 or t == len(common_dates) - 1:
+            progress = (t + 1) / len(common_dates) * 100
+            logging.info(f"... {t+1:3d}/{len(common_dates)} months ({progress:5.1f}%)")
         
         # Roll forward previous weights using current returns
         if t > 0:
             current_returns = returns_aligned.iloc[t]
-            rolled_forward_weights = roll_forward_weights(previous_weights, current_returns)
+            returns_clean = current_returns.fillna(0)
+            new_values = previous_weights * (1 + returns_clean)
+            
+            if new_values.sum() <= 0:
+                rolled_forward_weights = pd.Series(1.0 / len(previous_weights), index=previous_weights.index)
+            else:
+                rolled_forward_weights = new_values / new_values.sum()
         else:
             rolled_forward_weights = previous_weights.copy()
         
@@ -288,14 +265,15 @@ def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
         current_target = target_weights_aligned.iloc[t]
         current_alphas = alphas_aligned.iloc[t]
         
-        # Create CVXPY model for this specific period (avoid parameter issues)
+        # Create CVXPY model for this specific period
+        n_countries = len(common_countries)
         weights_var = cp.Variable(n_countries)
         
         # Objective function components
         portfolio_alpha = ALPHA_MULT * cp.sum(cp.multiply(current_alphas.values, weights_var))
         drift_penalty = LAMBDA_DRIFT_PENALTY * cp.sum_squares(weights_var - current_target.values)
         
-        # Use transaction costs as constants (not parameters) to avoid DCP issues
+        # Use transaction costs as constants to avoid DCP issues
         turnover_penalty = cp.sum(cp.multiply(tcosts_aligned.values, cp.abs(weights_var - rolled_forward_weights.values)))
         
         # Define objective function (maximize alpha, minimize penalties)
@@ -316,9 +294,8 @@ def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
             # Get optimized weights
             optimized_weights = weights_var.value
             
-            # Check if optimization was successful
             if optimized_weights is None:
-                logging.warning(f"Optimization failed for {date} - weights_var.value is None, using target weights")
+                logging.warning(f"Optimization failed for {date} - using target weights")
                 optimized_weights = current_target.values
             else:
                 optimized_weights = np.clip(optimized_weights, 0.0, MAX_WEIGHT)
@@ -328,26 +305,19 @@ def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
             weights_series = pd.Series(optimized_weights, index=common_countries)
             optimized_weights_list.append(weights_series)
             
-            # Calculate metrics with asset-specific transaction costs
+            # Calculate metrics
             portfolio_alpha_value = ALPHA_MULT * np.dot(optimized_weights, current_alphas)
-            original_portfolio_alpha_value = ALPHA_MULT * np.dot(current_target, current_alphas)
             drift_penalty_value = LAMBDA_DRIFT_PENALTY * np.sum((optimized_weights - current_target) ** 2)
             
             # Calculate turnover penalty using asset-specific costs
             asset_turnovers = np.abs(optimized_weights - rolled_forward_weights)
             turnover_penalty_value = np.sum(tcosts_aligned.values * asset_turnovers)
             
-            weight_diff_pct = np.sum(np.abs(optimized_weights - current_target)) * 100
-            
-            # Calculate total turnover (for reporting)
             total_turnover = np.sum(asset_turnovers) / 2  # One-way turnover
             
             metrics_list.append({
                 'Date': date,
                 'Portfolio_Alpha': portfolio_alpha_value,
-                'Original_Portfolio_Alpha': original_portfolio_alpha_value,
-                'Optimized_Portfolio_Alpha': portfolio_alpha_value,
-                'Weight_Diff_Pct': weight_diff_pct,
                 'Drift_Penalty': drift_penalty_value,
                 'Turnover_Penalty': turnover_penalty_value,
                 'Total_Turnover': total_turnover,
@@ -363,28 +333,6 @@ def run_optimization(target_weights_df, returns_df, alphas_df, tcosts_series):
             logging.warning(f"Optimization failed for {date}, using target weights")
             weights_series = current_target.copy()
             optimized_weights_list.append(weights_series)
-            
-            # Calculate what we can even in fallback case
-            original_portfolio_alpha_value = ALPHA_MULT * np.dot(current_target, current_alphas)
-            
-            # Calculate turnover penalty for fallback case
-            asset_turnovers = np.abs(current_target - rolled_forward_weights)
-            turnover_penalty_value = np.sum(tcosts_aligned.values * asset_turnovers)
-            total_turnover = np.sum(asset_turnovers) / 2
-            
-            metrics_list.append({
-                'Date': date,
-                'Portfolio_Alpha': original_portfolio_alpha_value,
-                'Original_Portfolio_Alpha': original_portfolio_alpha_value,
-                'Optimized_Portfolio_Alpha': original_portfolio_alpha_value,
-                'Weight_Diff_Pct': 0.0,
-                'Drift_Penalty': 0.0,
-                'Turnover_Penalty': turnover_penalty_value,
-                'Total_Turnover': total_turnover,
-                'Total_Objective': np.nan,
-                'Solver_Status': problem.status
-            })
-            
             previous_weights = weights_series
     
     # Create result DataFrames
@@ -407,32 +355,20 @@ def save_results(optimized_weights_df, metrics_df):
     
     # Save optimized weights and metrics
     output_file = 'T2_Optimized_Country_Weights.xlsx'
-    
     with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
         # Optimized weights
         optimized_weights_df.to_excel(writer, sheet_name='Optimized Weights')
         
         # Optimization metrics
         metrics_df.to_excel(writer, sheet_name='Optimization Metrics', index=False)
-        
-        # Summary statistics
-        summary_stats = pd.DataFrame({
-            'Mean Weight': optimized_weights_df.mean(),
-            'Std Dev': optimized_weights_df.std(),
-            'Min Weight': optimized_weights_df.min(),
-            'Max Weight': optimized_weights_df.max(),
-            'Days with Weight': (optimized_weights_df > 0).sum()
-        }).sort_values('Mean Weight', ascending=False)
-        
-        summary_stats.to_excel(writer, sheet_name='Summary Statistics')
     
-    logging.info(f"Optimization results saved to {output_file}")
+    logging.info(f"Results saved to {output_file}")
 
 def main():
     """Main execution function"""
     setup_logging()
     
-    logging.info("Starting T2 Contrarian Target Optimization...")
+    logging.info("Starting T2 Contrarian Country Weight Optimization...")
     
     try:
         # Load data
@@ -447,23 +383,18 @@ def main():
         save_results(optimized_weights_df, metrics_df)
         
         # Print summary
-        avg_turnover = metrics_df['Total_Turnover'].mean() * 100
-        avg_drift_penalty = metrics_df['Drift_Penalty'].mean()
-        avg_turnover_penalty = metrics_df['Turnover_Penalty'].mean()
+        logging.info("\\n" + "="*50)
+        logging.info("CONTRARIAN OPTIMIZATION SUMMARY")
+        logging.info("="*50)
+        logging.info(f"Processed {len(optimized_weights_df)} periods")
+        logging.info(f"Optimized {len(optimized_weights_df.columns)} countries")
+        logging.info(f"Average turnover: {metrics_df['Total_Turnover'].mean():.2%}")
+        logging.info("="*50)
         
-        logging.info("\n" + "="*60)
-        logging.info("CONTRARIAN TARGET OPTIMIZATION SUMMARY")
-        logging.info("="*60)
-        logging.info(f"Average Monthly Turnover: {avg_turnover:.2f}%")
-        logging.info(f"Average Drift Penalty: {avg_drift_penalty:.4f}")
-        logging.info(f"Average Turnover Penalty: {avg_turnover_penalty:.4f}")
-        logging.info(f"Optimization Periods: {len(metrics_df)}")
-        logging.info("="*60)
-        
-        logging.info("T2 Contrarian Target Optimization completed successfully!")
+        logging.info("T2 Contrarian Country Weight Optimization completed successfully!")
         
     except Exception as e:
-        logging.error(f"Error during optimization: {e}")
+        logging.error(f"Optimization failed: {e}")
         raise
 
 if __name__ == "__main__":
