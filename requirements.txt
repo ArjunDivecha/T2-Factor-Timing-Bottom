@@ -1,0 +1,26 @@
+# T2 Factor Timing Bottom - Contrarian Strategy Dependencies
+
+# Core Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Optimization
+cvxpy>=1.3.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Excel Processing
+openpyxl>=3.1.0
+xlsxwriter>=3.0.0
+
+# Progress Tracking
+tqdm>=4.64.0
+
+# Additional Dependencies
+warnings
+logging
+datetime
+pathlib
+typing
