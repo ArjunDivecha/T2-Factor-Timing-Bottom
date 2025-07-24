@@ -149,7 +149,7 @@ all_weights = all_weights.fillna(0.0)  # Start with zero weights
 # WEIGHT CALCULATION PROCESS
 # ===============================
 
-print("\nProcessing all dates with contrarian approach...")
+print("\\nProcessing all dates with contrarian approach...")
 # Process each date in the all_dates list using contrarian selection
 for date in tqdm(all_dates):
     # Initialize weights for all countries on this date
@@ -206,14 +206,14 @@ for date in tqdm(all_dates):
 
 # Verify weights sum to approximately 1 for each date
 weight_sums = all_weights.sum(axis=1)
-print("\nWeight sum statistics:")
+print("\\nWeight sum statistics:")
 print(weight_sums.describe())
 
 # ===============================
 # RESULTS SAVING
 # ===============================
 
-print("\nSaving results...")
+print("\\nSaving results...")
 output_file = 'T2_Final_Country_Weights.xlsx'
 with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
     # Sheet 1: Complete time series of country weights
@@ -241,7 +241,7 @@ with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
             'Days with Weight': (all_weights > 0).sum(),
             'Latest Date': pd.Series([latest_valid_date] * len(all_weights.columns), index=all_weights.columns)
         }).sort_values('Weight', ascending=False)
-        print(f"\nUsing {latest_valid_date} as the latest valid date with non-zero weights")
+        print(f"\\nUsing {latest_valid_date} as the latest valid date with non-zero weights")
     else:
         # Fallback in case there are no dates with non-zero weights (unlikely)
         latest_weights = pd.DataFrame({
@@ -252,19 +252,121 @@ with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
     
     latest_weights.to_excel(writer, sheet_name='Latest Weights')
 
-print(f"\nResults saved to {output_file}")
+print(f"\\nResults saved to {output_file}")
 
 # ===============================
 # SUMMARY REPORTING
 # ===============================
 
 # Print top countries by average weight
-print("\nTop 10 countries by average weight:")
+print("\\nTop 10 countries by average weight:")
 print(summary_stats.head(10))
 
-print("\nContrarian country weight allocation completed successfully!")
-print("Files generated:")
-print(f"- {output_file}: Complete contrarian country weight analysis")
-print("\nThe contrarian approach selects the bottom 20% of countries for each factor,")
-print("implementing a strategy that invests in worst-performing countries based on")
-print("the hypothesis that underperforming factors may provide better future returns.")
+def write_final_country_weights():
+    """
+    Write country weights to T2_Country_Final.xlsx in the original sort order
+    from T2 Master.xlsx using the latest calculated weights.
+    """
+    print("\\nWriting country weights to T2_Country_Final.xlsx...")
+    
+    # Get the latest calculated weights from the algorithm
+    # Find the last row that has non-zero weights
+    non_zero_dates = all_weights.index[all_weights.sum(axis=1) > 0]
+    if len(non_zero_dates) == 0:
+        print("Error: No date with non-zero weights found")
+        return
+        
+    latest_valid_date = non_zero_dates[-1]  # Get the last date with non-zero weights
+    print(f"Using weights from latest date: {latest_valid_date}")
+    
+    # Get weights for the latest date
+    latest_weights = all_weights.loc[latest_valid_date]
+    
+    # Create a dictionary of country weights from algorithm results
+    # Filter to include only countries with non-zero weights
+    country_weight_dict = {}
+    for country, weight in latest_weights.items():
+        if weight > 0:
+            country_weight_dict[country] = weight
+    
+    print(f"Found {len(country_weight_dict)} countries with non-zero weights")
+    total = sum(country_weight_dict.values())
+    print(f"Total weight: {total:.4f}")
+    
+    # Read original country order from T2 Master.xlsx
+    try:
+        print("Reading original country order from T2 Master.xlsx...")
+        master_df = pd.read_excel("T2 Master.xlsx")
+        
+        # In T2 Master.xlsx, countries are column names (except for the first 'Country' column)
+        # The first column is actually dates, not countries
+        country_columns = list(master_df.columns[1:])  # Skip the first column which is 'Country' (dates)
+        print(f"Found {len(country_columns)} countries in column headers")
+        
+        # Create a full list of country names from T2 Master.xlsx
+        all_countries = country_columns
+            
+        print(f"Total countries to include: {len(all_countries)}")
+        
+        # Create a DataFrame with ALL countries and initialize weights to 0
+        all_weights_df = pd.DataFrame({
+            'Country': all_countries,
+            'Weight': 0.0  # Default weight is 0
+        })
+        
+        # Update weights for countries based on the algorithm calculations
+        for country, weight in country_weight_dict.items():
+            # Find the country in our DataFrame (exact match first, then case-insensitive)
+            match_idx = all_weights_df[all_weights_df['Country'] == country].index
+            if len(match_idx) == 0:
+                # Try case-insensitive match
+                match_idx = all_weights_df[all_weights_df['Country'].str.lower() == country.lower()].index
+            
+            if len(match_idx) > 0:
+                all_weights_df.loc[match_idx[0], 'Weight'] = weight
+            else:
+                print(f"Note: Country '{country}' with weight {weight:.4f} not found in T2 Master.xlsx")
+                # Add it to the end with its weight
+                new_row = pd.DataFrame({'Country': [country], 'Weight': [weight]})
+                all_weights_df = pd.concat([all_weights_df, new_row], ignore_index=True)
+        
+        # Result is already sorted in the original order from T2 Master.xlsx
+        sorted_weights = all_weights_df
+        
+    except Exception as e:
+        print(f"Error reading original country order: {e}")
+        print("Falling back to only countries with weights")
+        
+        # Create DataFrame from the dictionary if we can't read T2 Master.xlsx
+        sorted_weights = pd.DataFrame(list(country_weight_dict.items()), 
+                                  columns=['Country', 'Weight'])
+    
+    # Write to Excel file
+    output_file = 'T2_Country_Final.xlsx'
+    with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+        sorted_weights.to_excel(writer, sheet_name='Country Weights', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Country Weights']
+        
+        header_format = workbook.add_format({'bold': True, 'text_wrap': True,
+                                             'valign': 'top', 'bg_color': '#D9D9D9', 'border': 1})
+        pct_format = workbook.add_format({'num_format': '0.00%'})
+
+        worksheet.set_column(0, 0, 15)  # Country col
+        worksheet.set_column(1, 1, 12, pct_format)
+
+        for col_num, value in enumerate(sorted_weights.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+
+        total_weight = sorted_weights['Weight'].sum()
+        last_row = len(sorted_weights) + 1
+        bold_format = workbook.add_format({'bold': True})
+        total_format = workbook.add_format({'bold': True, 'num_format': '0.00%'})
+        worksheet.write(last_row, 0, 'TOTAL', bold_format)
+        worksheet.write(last_row, 1, total_weight, total_format)
+        
+    print(f"Final contrarian country weights saved to {output_file}")
+
+# Execute the function to write country weights
+write_final_country_weights()
