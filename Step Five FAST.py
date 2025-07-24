@@ -261,16 +261,15 @@ def run_fast_optimization():
             window_data = returns_df.iloc[:i+1]
         else:
             # Rolling window (60 months)
-            window_data = returns_df.iloc[i-WINDOW_SIZE:i]
+            window_data = returns_df.iloc[i-WINDOW_SIZE+1:i+1]
         
         # Skip if insufficient data
         if len(window_data) < 1:
             continue
             
-        # Calculate simple arithmetic mean expected returns
+        # Calculate expected returns and covariance
         factor_means = window_data.mean(axis=0)
-        # Apply 8x scaling factor to match original utility calculation
-        expected_returns = 8 * factor_means
+        expected_returns = 8 * factor_means  # Apply 8x scaling factor
         
         # Covariance matrix (annualized)
         cov_matrix = np.cov(window_data.values.T, ddof=0) * 12
@@ -287,14 +286,11 @@ def run_fast_optimization():
         # Optimize weights
         optimal_weights = optimizer.optimize_weights(expected_returns, cov_matrix)
         
-        # Clean up numerical precision errors while preserving constraints
+        # Clean up numerical precision errors
         optimal_weights = np.maximum(optimal_weights, 0)
         weight_sum = optimal_weights.sum()
         if abs(weight_sum - 1.0) > 1e-6:
-            scaled_weights = optimal_weights / weight_sum
-            max_weights_array = np.array([max_weights.get(name, 1.0) for name in factor_names])
-            if not np.any(scaled_weights > max_weights_array + 1e-8):
-                optimal_weights = scaled_weights
+            optimal_weights = optimal_weights / weight_sum
         
         # Store results
         weights_df.loc[date] = optimal_weights
@@ -329,10 +325,7 @@ def run_fast_optimization():
     optimal_weights_extra = np.maximum(optimal_weights_extra, 0)
     weight_sum = optimal_weights_extra.sum()
     if abs(weight_sum - 1.0) > 1e-6:
-        scaled_weights = optimal_weights_extra / weight_sum
-        max_weights_array = np.array([max_weights.get(name, 1.0) for name in factor_names])
-        if not np.any(scaled_weights > max_weights_array + 1e-8):
-            optimal_weights_extra = scaled_weights
+        optimal_weights_extra = optimal_weights_extra / weight_sum
     
     # Store extra month results
     weights_df.loc[next_month_date] = optimal_weights_extra
@@ -468,7 +461,7 @@ def main():
     
     # Print summary
     stats = performance_results['statistics']
-    logging.info("\n" + "="*50)
+    logging.info("\\n" + "="*50)
     logging.info("CONTRARIAN STRATEGY PERFORMANCE SUMMARY")
     logging.info("="*50)
     for metric, value in stats.items():
